@@ -10,6 +10,7 @@
 
 #include "base/ILogOutputter.h"
 
+#include <QFile>
 #include <QString>
 //! Stop traversing log chain outputter
 /*!
@@ -68,6 +69,7 @@ public:
 
 private:
   QString m_fileName;
+  QFile m_file;
 };
 
 //! Write log to system log
