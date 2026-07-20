@@ -15,6 +15,7 @@
 #include "common/NetworkProtocol.h"
 #include "common/Settings.h"
 #include "deskflow/Clipboard.h"
+#include "deskflow/DeskflowException.h"
 #include "deskflow/IPlatformScreen.h"
 #include "deskflow/PacketStreamFilter.h"
 #include "deskflow/ProtocolTypes.h"
@@ -45,7 +46,10 @@ Client::Client(
       m_socketFactory(socketFactory),
       m_screen(screen),
       m_events(events),
-      m_useSecureNetwork(Settings::value(Settings::Security::TlsEnabled).toBool())
+      m_useSecureNetwork(Settings::value(Settings::Security::TlsEnabled).toBool()),
+      m_maximumClipboardReceiveSize(
+          static_cast<size_t>(Settings::value(Settings::Server::ClipboardSize).toUInt()) * 1024 * 1024
+      )
 {
   assert(m_socketFactory != nullptr);
   assert(m_screen != nullptr);
@@ -173,6 +177,11 @@ bool Client::isConnecting() const
 NetworkAddress Client::getServerAddress() const
 {
   return m_serverAddress;
+}
+
+size_t Client::getMaximumClipboardReceiveSizeBytes() const
+{
+  return m_maximumClipboardReceiveSize;
 }
 
 void *Client::getEventTarget() const
@@ -624,14 +633,29 @@ void Client::handleHello()
     return;
   }
 
-  LOG_DEBUG(
-      "saying hello back with version %s %d.%d", protocolName.c_str(), kProtocolMajorVersion, kProtocolMinorVersion
-  );
+  if (serverMajor != kProtocolMajorVersion) {
+    LOG_WARN("server protocol version not compatible: %d.%d", serverMajor, serverMinor);
+    sendConnectionFailedEvent(IncompatibleClientException(serverMajor, serverMinor).what());
+    cleanupTimer();
+    cleanupConnection();
+    return;
+  }
+
+  int16_t helloBackMinor = kProtocolMinorVersion;
+  if (serverMinor < kProtocolMinorVersion) {
+    helloBackMinor = serverMinor;
+    LOG_INFO(
+        "downgrading client protocol version from %d.%d to %d.%d", //
+        kProtocolMajorVersion, kProtocolMinorVersion, kProtocolMajorVersion, helloBackMinor
+    );
+  }
+
+  LOG_DEBUG("saying hello back with version %s %d.%d", protocolName.c_str(), kProtocolMajorVersion, helloBackMinor);
 
   // dynamically build write format for hello back since `ProtocolUtil::writef`
   // doesn't support formatting fixed length strings yet.
   std::string helloBackMessage = protocolName + kMsgHelloBackArgs;
-  ProtocolUtil::writef(m_stream, helloBackMessage.c_str(), kProtocolMajorVersion, kProtocolMinorVersion, &m_name);
+  ProtocolUtil::writef(m_stream, helloBackMessage.c_str(), kProtocolMajorVersion, helloBackMinor, &m_name);
 
   // now connected but waiting to complete handshake
   setupScreen();

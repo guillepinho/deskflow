@@ -124,22 +124,37 @@ FileLogOutputter::FileLogOutputter(const QString &logFile)
 void FileLogOutputter::setLogFilename(const QString &logFile)
 {
   assert(logFile != nullptr);
+  if (m_file.isOpen())
+    m_file.close();
   m_fileName = logFile;
 }
 
 bool FileLogOutputter::write(LogLevel::Level, const QString &message)
 {
-  QFile file(m_fileName);
-  if (!file.open(QFile::WriteOnly | QFile::Append))
-    return false;
+  // keep the file open across writes.  re-opening (and closing) it on every
+  // single line is pathologically slow at high log levels and can stall the
+  // thread long enough to trip connection/handshake timeouts.  writes are
+  // already serialized by the logger's mutex, so a shared handle is safe.
+  if (!m_file.isOpen()) {
+    m_file.setFileName(m_fileName);
+    if (!m_file.open(QFile::WriteOnly | QFile::Append | QFile::Text))
+      return false;
+  }
 
-  QTextStream(&file) << message << Qt::endl;
-  file.close();
+  {
+    QTextStream stream(&m_file);
+    stream << message << Qt::endl; // endl flushes so tail -f sees each line
+  }
 
-  if (file.size() > s_logFileSizeLimit) {
+  if (m_file.size() > s_logFileSizeLimit) {
+    // rotate: keep a single backup.  the previous implementation removed the
+    // current file *before* renaming it, so the rename always failed and the
+    // log was simply wiped with no backup kept.
+    m_file.close();
     const auto oldFile = QStringLiteral("%1.1").arg(m_fileName);
-    QFile::remove(m_fileName);
+    QFile::remove(oldFile);
     QFile::rename(m_fileName, oldFile);
+    // next write reopens a fresh m_fileName
   }
 
   return true;
@@ -152,5 +167,6 @@ void FileLogOutputter::open(const QString &title)
 
 void FileLogOutputter::close()
 {
-  // do nothing
+  if (m_file.isOpen())
+    m_file.close();
 }
